@@ -2,15 +2,17 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import sqlite3
 from datetime import datetime
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-DB = "crm.db"
+# Use absolute path (important for Render!)
+DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crm.db")
 
 
 # ---------------------------------------------------------
-# Utility: Create Tables if Not Exists
+# Create Tables
 # ---------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB)
@@ -57,12 +59,11 @@ def init_db():
     conn.close()
 
 
-# Initialize DB
 init_db()
 
 
 # ---------------------------------------------------------
-#   CUSTOMER CRUD
+# CUSTOMER CRUD
 # ---------------------------------------------------------
 @app.route("/customers", methods=["POST"])
 def add_customer():
@@ -84,7 +85,6 @@ def add_customer():
 def list_customers():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-
     cur.execute("SELECT * FROM customers")
     rows = cur.fetchall()
     conn.close()
@@ -97,7 +97,7 @@ def list_customers():
 
 
 # ---------------------------------------------------------
-#   PRODUCT + STOCK
+# PRODUCT CRUD
 # ---------------------------------------------------------
 @app.route("/products", methods=["POST"])
 def add_product():
@@ -109,9 +109,9 @@ def add_product():
         "INSERT INTO products (name, price, stock) VALUES (?, ?, ?)",
         (data["name"], data["price"], data["stock"])
     )
+
     conn.commit()
     conn.close()
-
     return jsonify({"message": "Product added"}), 201
 
 
@@ -119,7 +119,6 @@ def add_product():
 def list_products():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-
     cur.execute("SELECT * FROM products")
     rows = cur.fetchall()
     conn.close()
@@ -132,20 +131,10 @@ def list_products():
 
 
 # ---------------------------------------------------------
-#   SIMPLE BILLING (INR) + SALES
+# SIMPLE BILLING (INR)
 # ---------------------------------------------------------
 @app.route("/billing", methods=["POST"])
 def create_bill():
-    """
-    Body format:
-    {
-      "customer_id": 1,
-      "items": [
-        {"product_id": 2, "qty": 3},
-        {"product_id": 5, "qty": 1}
-      ]
-    }
-    """
     data = request.json
     customer_id = data["customer_id"]
     items = data["items"]
@@ -153,14 +142,10 @@ def create_bill():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
 
-    # Calculate total
     total_amount = 0
 
     for item in items:
-        product_id = item["product_id"]
-        qty = item["qty"]
-
-        cur.execute("SELECT price, stock FROM products WHERE id=?", (product_id,))
+        cur.execute("SELECT price, stock FROM products WHERE id=?", (item["product_id"],))
         product = cur.fetchone()
 
         if not product:
@@ -168,18 +153,17 @@ def create_bill():
 
         price, stock = product
 
-        if qty > stock:
-            return jsonify({"error": "Insufficient stock"}), 400
+        if item["qty"] > stock:
+            return jsonify({"error": "Not enough stock"}), 400
 
-        total_amount += price * qty
+        total_amount += price * item["qty"]
 
         # Update stock
         cur.execute(
             "UPDATE products SET stock = stock - ? WHERE id = ?",
-            (qty, product_id)
+            (item["qty"], item["product_id"])
         )
 
-    # Create sale
     sale_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cur.execute(
         "INSERT INTO sales (customer_id, total, date) VALUES (?, ?, ?)",
@@ -187,17 +171,14 @@ def create_bill():
     )
     sale_id = cur.lastrowid
 
-    # Insert sale items
+    # Sale items
     for item in items:
-        product_id = item["product_id"]
-        qty = item["qty"]
-
-        cur.execute("SELECT price FROM products WHERE id=?", (product_id,))
+        cur.execute("SELECT price FROM products WHERE id=?", (item["product_id"],))
         price = cur.fetchone()[0]
 
         cur.execute(
             "INSERT INTO sale_items (sale_id, product_id, qty, price) VALUES (?, ?, ?, ?)",
-            (sale_id, product_id, qty, price)
+            (sale_id, item["product_id"], item["qty"], price)
         )
 
     conn.commit()
@@ -206,18 +187,17 @@ def create_bill():
     return jsonify({
         "message": "Bill created",
         "sale_id": sale_id,
-        "total_in_inr": f"₹ {total_amount:.2f}"
+        "total": f"₹ {total_amount:.2f}"
     })
 
 
 # ---------------------------------------------------------
-# Dashboard: Sales List
+# SALES LIST
 # ---------------------------------------------------------
 @app.route("/sales", methods=["GET"])
 def list_sales():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
-
     cur.execute("SELECT * FROM sales ORDER BY date DESC")
     rows = cur.fetchall()
     conn.close()
@@ -229,8 +209,13 @@ def list_sales():
     return jsonify(sales)
 
 
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"status": "CRM backend running"})
+
+
 # ---------------------------------------------------------
-# Run
+# RUN (Gunicorn on Render)
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000)
