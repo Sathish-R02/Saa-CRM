@@ -7,12 +7,11 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# Use absolute path (important for Render!)
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crm.db")
 
 
 # ---------------------------------------------------------
-# Create Tables
+# Create DB Tables
 # ---------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB)
@@ -63,9 +62,17 @@ init_db()
 
 
 # ---------------------------------------------------------
-# CUSTOMER CRUD
+# UTILITY: Create alias route WITH /api/
+# ---------------------------------------------------------
+def api_route(path):
+    return f"/api{path}"
+
+
+# ---------------------------------------------------------
+# CUSTOMER ROUTES
 # ---------------------------------------------------------
 @app.route("/customers", methods=["POST"])
+@app.route(api_route("/customers"), methods=["POST"])
 def add_customer():
     data = request.json
     conn = sqlite3.connect(DB)
@@ -77,11 +84,11 @@ def add_customer():
     )
     conn.commit()
     conn.close()
-
     return jsonify({"message": "Customer added"}), 201
 
 
 @app.route("/customers", methods=["GET"])
+@app.route(api_route("/customers"), methods=["GET"])
 def list_customers():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -89,17 +96,17 @@ def list_customers():
     rows = cur.fetchall()
     conn.close()
 
-    customers = [
+    return jsonify([
         {"id": r[0], "name": r[1], "phone": r[2], "address": r[3]}
         for r in rows
-    ]
-    return jsonify(customers)
+    ])
 
 
 # ---------------------------------------------------------
-# PRODUCT CRUD
+# PRODUCT ROUTES
 # ---------------------------------------------------------
 @app.route("/products", methods=["POST"])
+@app.route(api_route("/products"), methods=["POST"])
 def add_product():
     data = request.json
     conn = sqlite3.connect(DB)
@@ -109,13 +116,13 @@ def add_product():
         "INSERT INTO products (name, price, stock) VALUES (?, ?, ?)",
         (data["name"], data["price"], data["stock"])
     )
-
     conn.commit()
     conn.close()
     return jsonify({"message": "Product added"}), 201
 
 
 @app.route("/products", methods=["GET"])
+@app.route(api_route("/products"), methods=["GET"])
 def list_products():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -123,17 +130,17 @@ def list_products():
     rows = cur.fetchall()
     conn.close()
 
-    products = [
+    return jsonify([
         {"id": r[0], "name": r[1], "price": r[2], "stock": r[3]}
         for r in rows
-    ]
-    return jsonify(products)
+    ])
 
 
 # ---------------------------------------------------------
-# SIMPLE BILLING (INR)
+# BILLING
 # ---------------------------------------------------------
 @app.route("/billing", methods=["POST"])
+@app.route(api_route("/billing"), methods=["POST"])
 def create_bill():
     data = request.json
     customer_id = data["customer_id"]
@@ -154,11 +161,10 @@ def create_bill():
         price, stock = product
 
         if item["qty"] > stock:
-            return jsonify({"error": "Not enough stock"}), 400
+            return jsonify({"error": "Out of stock"}), 400
 
         total_amount += price * item["qty"]
 
-        # Update stock
         cur.execute(
             "UPDATE products SET stock = stock - ? WHERE id = ?",
             (item["qty"], item["product_id"])
@@ -171,7 +177,6 @@ def create_bill():
     )
     sale_id = cur.lastrowid
 
-    # Sale items
     for item in items:
         cur.execute("SELECT price FROM products WHERE id=?", (item["product_id"],))
         price = cur.fetchone()[0]
@@ -195,6 +200,7 @@ def create_bill():
 # SALES LIST
 # ---------------------------------------------------------
 @app.route("/sales", methods=["GET"])
+@app.route(api_route("/sales"), methods=["GET"])
 def list_sales():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -202,20 +208,46 @@ def list_sales():
     rows = cur.fetchall()
     conn.close()
 
-    sales = [
+    return jsonify([
         {"id": r[0], "customer_id": r[1], "total": f"₹ {r[2]:.2f}", "date": r[3]}
         for r in rows
-    ]
-    return jsonify(sales)
-
-
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({"status": "CRM backend running"})
+    ])
 
 
 # ---------------------------------------------------------
-# RUN (Gunicorn on Render)
+# DASHBOARD (Lovable expects this)
+# ---------------------------------------------------------
+@app.route("/dashboard", methods=["GET"])
+@app.route(api_route("/dashboard"), methods=["GET"])
+def dashboard():
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM customers")
+    total_customers = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM products")
+    total_products = cur.fetchone()[0]
+
+    cur.execute("SELECT SUM(total) FROM sales")
+    total_sales = cur.fetchone()[0] or 0
+
+    conn.close()
+
+    return jsonify({
+        "total_customers": total_customers,
+        "total_products": total_products,
+        "total_sales_in_inr": f"₹ {total_sales:.2f}"
+    })
+
+
+@app.route("/")
+def home():
+    return jsonify({"message": "CRM API is running"})
+
+
+# ---------------------------------------------------------
+# RUN
 # ---------------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
